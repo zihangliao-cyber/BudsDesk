@@ -24,7 +24,8 @@ namespace BudsDesk {
         readonly List<string> log=new List<string>();
         readonly DispatcherTimer poll=new DispatcherTimer();
         Forms.NotifyIcon tray; Forms.ToolStripMenuItem[] modes;
-        bool busy,exit; int failures; IntPtr hwnd;
+        BatterySnapshot battery=new BatterySnapshot();
+        bool busy,exit; int failures,pollTicks; IntPtr hwnd;
         readonly bool preview;
         [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr h,int id,uint modifiers,uint key);
         [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr h,int id);
@@ -39,15 +40,15 @@ namespace BudsDesk {
             Find<Button>("Anc").Click+=async(s,e)=>await SetMode(1);
             Find<Button>("Off").Click+=async(s,e)=>await SetMode(0);
             Find<Button>("Ambient").Click+=async(s,e)=>await SetMode(2);
+            var adaptiveBox=Find<CheckBox>("Adaptive");
+            if(adaptiveBox!=null) adaptiveBox.Click+=async(s,e)=>await SetAdaptive(adaptiveBox.IsChecked==true);
             Find<Button>("BluetoothSettings").Click+=(s,e)=>{
                 try { Process.Start(new ProcessStartInfo("ms-settings:bluetooth") {UseShellExecute=true}); }
                 catch(Exception ex) { Status(ex.Message); }
             };
             Find<Button>("Diagnostics").Click+=(s,e)=>ExportLog();
             Find<Button>("About").Click+=(s,e)=>MessageBox.Show(window,
-                "BudsDesk v0.1.0\n渝水龙出品\nCopyright © 2026 渝水龙\n\n"+
-                "GitHub: zihangliao-cyber/BudsDesk\nMIT 开源许可证\n\n"+
-                "协议研究参考：ncr/omarchy-headphones。\n本项目为独立开发的耳机伴侣，与小米无隶属关系。",
+                "BudsDesk v0.2.0\n渝水龙出品\nCopyright © 2026 渝水龙\n\nGitHub: zihangliao-cyber/BudsDesk\nMIT 开源许可证\n\n协议研究参考：ncr/omarchy-headphones 与 maniacx/BudsLink。\n本项目独立开发，与小米无隶属关系。",
                 "关于 BudsDesk · 渝水龙",MessageBoxButton.OK,MessageBoxImage.Information);
             window.Loaded+=async(s,e)=>{ if(!preview) await Scan(); };
             window.SourceInitialized+=(s,e)=>{ if(!preview) SetupDesktop(); };
@@ -62,9 +63,16 @@ namespace BudsDesk {
             poll.Tick+=async(s,e)=>{
                 if(busy || !link.Ready) return;
                 busy=true;
-                try { await link.RefreshAsync(); failures=0; Update(); }
-                catch(Exception ex) { failures++; Status("连接已断开："+ex.Message); Update(); }
+                bool lost=false;
+                try {
+                    await link.RefreshAsync();
+                    pollTicks++;
+                    if(pollTicks%3==0) await RefreshBatteryCoreAsync(true);
+                    failures=0; Update();
+                }
+                catch(Exception ex) { failures++; lost=true; Status("连接已断开："+ex.Message); Update(); }
                 finally { busy=false; Update(); }
+                if(lost) { await RefreshBatteryCoreAsync(false); Update(); }
             };
             Update();
         }
@@ -103,12 +111,18 @@ namespace BudsDesk {
             lock(log) { log.Add(DateTime.Now.ToString("HH:mm:ss.fff")+" "+text); if(log.Count>1000)log.RemoveAt(0); }
         }
         void Status(string message) { Find<TextBlock>("Status").Text=message; WriteLog(message); }
+        async Task RefreshBatteryCoreAsync(bool controlConnected) {
+            Earbuds selected=Find<ComboBox>("Devices").SelectedItem as Earbuds;
+            if(selected==null) { battery=new BatterySnapshot(); return; }
+            battery=await Task.Run(()=>WindowsBatteryReader.Read(selected,controlConnected ? link : null,WriteLog));
+        }
         async Task Scan() {
             if(busy)return; busy=true; Update();
             try {
                 var devices=await Task.Run(()=>BluetoothDiscovery.Paired());
                 Find<ComboBox>("Devices").ItemsSource=devices;
                 if(devices.Count>0)Find<ComboBox>("Devices").SelectedIndex=0;
+                await RefreshBatteryCoreAsync(link.Ready);
                 Find<TextBlock>("Hint").Text=devices.Count>0 ? "已找到配对耳机，点击连接以读取当前模式。" : "未找到耳机。请先在系统中配对 Xiaomi Buds 5 Pro，再点刷新。";
                 Status(devices.Count>0 ? "找到 "+devices.Count+" 副匹配耳机。" : "尚未发现已配对的小米 Buds 5 Pro。");
             } catch(Exception ex) { Status("读取设备失败："+ex.Message); }
@@ -116,15 +130,25 @@ namespace BudsDesk {
         }
         async Task Connect() {
             if(busy)return;
-            if(link.Ready) { link.Dispose(); poll.Stop(); Status("已断开控制连接，系统音频连接保持不变。"); Update(); return; }
+            if(link.Ready) {
+                link.Dispose(); poll.Stop();
+                await RefreshBatteryCoreAsync(false);
+                Status("已断开控制连接，系统音频连接保持不变。"); Update(); return;
+            }
             Earbuds selected=Find<ComboBox>("Devices").SelectedItem as Earbuds;
             if(selected==null) { Status("请先在系统中配对耳机，再刷新列表。"); return; }
             busy=true; Status("正在连接耳机并读取监听模式…"); Update();
+            bool failed=false;
             try {
-                await link.ConnectAsync(selected); failures=0; poll.Start();
+                await link.ConnectAsync(selected); failures=0; pollTicks=0; poll.Start();
+                await RefreshBatteryCoreAsync(true);
                 Status("控制通道已连接，当前为"+Protocol.ModeName(link.Mode)+"模式。");
-            } catch(Exception ex) { Status(ex.Message); }
+            } catch(Exception ex) {
+                failed=true;
+                Status(ex.Message);
+            }
             finally {busy=false;Update();}
+            if(failed) { await RefreshBatteryCoreAsync(false); Update(); }
         }
         async Task SetMode(int mode) {
             if(busy || !link.Ready) { if(!link.Ready)Status("请先连接耳机。"); return; }
@@ -132,6 +156,22 @@ namespace BudsDesk {
             try { await link.SetAsync(mode); Status("已由耳机确认："+Protocol.ModeName(link.Mode)+"模式。"); }
             catch(Exception ex) { Status("切换失败："+ex.Message); }
             finally {busy=false;Update();}
+        }
+        async Task SetAdaptive(bool enable) {
+            if(busy || !link.Ready || !link.Adaptive.ProtocolConfirmed) {
+                if(!link.Adaptive.ProtocolConfirmed)
+                    Status("自适应降噪协议尚未经手机官方 App 抓包确认，已禁止发送未知指令。");
+                else if(!link.Ready)
+                    Status("请先连接耳机。");
+                Update();
+                return;
+            }
+            busy=true; Status("正在设置自适应降噪，等待耳机确认…"); Update();
+            try {
+                bool actual=await link.SetAdaptiveAsync(enable);
+                Status("已由耳机确认：自适应降噪"+(actual ? "开启" : "关闭")+"。");
+            } catch(Exception ex) { Status("自适应降噪设置失败："+ex.Message); }
+            finally { busy=false; Update(); }
         }
         void Update() {
             bool ready=link.Ready;
@@ -146,18 +186,43 @@ namespace BudsDesk {
                 button.Foreground=new SolidColorBrush(ready && link.Mode==i ? Colors.White : (Color)ColorConverter.ConvertFromString("#50596A"));
                 if(modes!=null) {modes[i].Enabled=ready && !busy; modes[i].Checked=ready && link.Mode==i;}
             }
+            var adaptiveBox=Find<CheckBox>("Adaptive");
+            if(adaptiveBox!=null) {
+                adaptiveBox.IsEnabled=ready && !busy && link.Adaptive.ProtocolConfirmed;
+                adaptiveBox.IsChecked=link.Adaptive.ProtocolConfirmed && link.Adaptive.Enabled==true;
+            }
+            var adaptiveState=Find<TextBlock>("AdaptiveState");
+            if(adaptiveState!=null) adaptiveState.Text=link.Adaptive.FormatStatus(ready);
+
+            var batOverall=Find<TextBlock>("BatteryOverall");
+            if(batOverall!=null) batOverall.Text=battery.FormatOverallLine();
+            var batMain=Find<TextBlock>("BatteryMain");
+            if(batMain!=null) {
+                batMain.Text=battery.FormatMainLine();
+                bool hasSlot=battery.IsConnected && (battery.LeftPercent.HasValue || battery.RightPercent.HasValue || battery.CasePercent.HasValue);
+                batMain.Foreground=new SolidColorBrush((Color)ColorConverter.ConvertFromString(hasSlot ? "#192130" : "#A1A7B5"));
+            }
+            var batSub=Find<TextBlock>("BatterySub");
+            if(batSub!=null) batSub.Text=battery.FormatSubLine();
+
             Find<TextBlock>("Badge").Text=ready ? "●  控制已连接" : "●  尚未连接";
             Find<TextBlock>("Badge").Foreground=new SolidColorBrush(ready ? Color.FromRgb(57,150,119) : Color.FromRgb(142,148,162));
             Find<TextBlock>("HeroMode").Text=ready ? "正在使用 · "+Protocol.ModeName(link.Mode) : "等待连接";
             Find<TextBlock>("ModeState").Text=busy ? "正在同步…" : ready ? "已同步耳机状态" : "连接后可调节";
-            if(tray!=null)tray.Text=ready ? "BudsDesk · "+Protocol.ModeName(link.Mode) : "BudsDesk · 未连接";
+            if(tray!=null) {
+                string t=ready ? "BudsDesk · "+Protocol.ModeName(link.Mode) : "BudsDesk · 未连接";
+                if(battery.IsConnected && (battery.LeftPercent.HasValue || battery.RightPercent.HasValue))
+                    t+=" (L:"+BatterySnapshot.FormatSlot(battery.LeftPercent,false)+" R:"+BatterySnapshot.FormatSlot(battery.RightPercent,false)+")";
+                if(t.Length>63) t=t.Substring(0,63);
+                tray.Text=t;
+            }
         }
         void ExportLog() {
             var dialog=new Microsoft.Win32.SaveFileDialog { FileName="BudsDesk-diagnostics.txt",Filter="文本日志|*.txt" };
             if(dialog.ShowDialog(window)!=true)return;
             try {
                 string text;lock(log)text=String.Join(Environment.NewLine,log);
-                File.WriteAllText(dialog.FileName,"BudsDesk 0.1\r\n"+Environment.OSVersion+"\r\n"+text,Encoding.UTF8);
+                File.WriteAllText(dialog.FileName,"BudsDesk 0.2\r\n"+Environment.OSVersion+"\r\n"+text,Encoding.UTF8);
                 Status("诊断日志已导出。");
             } catch(Exception ex) { Status("导出失败："+ex.Message); }
         }
@@ -203,11 +268,26 @@ namespace BudsDesk {
             result.AppendLine("OS: "+Environment.OSVersion);
             result.AppendLine("Device struct size: "+Marshal.SizeOf(typeof(Native.Device)));
             var devices=BluetoothDiscovery.Paired();result.AppendLine("Matching paired devices: "+devices.Count);
-            foreach(var d in devices)result.AppendLine(d.ToString());
-            if(devices.Count>0)using(var c=new EarbudConnection()) {
-                c.Trace=t=>result.AppendLine(t);
-                try {await c.ConnectAsync(devices[0]);result.AppendLine("Mode: "+Protocol.ModeName(c.Mode));}
-                catch(Exception ex){result.AppendLine("Connection result: "+ex.Message);}
+            foreach(var d in devices)result.AppendLine(d.ToString()+" [MAC="+d.MacHex+"]");
+            if(devices.Count>0) {
+                var target=devices[0];
+                using(var c=new EarbudConnection()) {
+                    c.Trace=t=>result.AppendLine(t);
+                    try {
+                        result.AppendLine("--- Standard SPP (00001101 GAIA) & MiWear (0000fd2d RCSP) Probe ---");
+                        await c.ConnectAsync(target);
+                        result.AppendLine("Mode: "+Protocol.ModeName(c.Mode));
+                        if(c.LastModeState!=null) result.AppendLine("Mode 1103 Raw: "+c.LastModeState.RawHex);
+                        result.AppendLine("Adaptive Status: "+c.Adaptive.FormatStatus(true));
+                    }
+                    catch(Exception ex){result.AppendLine("Connection result: "+ex.Message);}
+
+                    result.AppendLine("--- Battery & PnP / BLE GATT / RCSP Summary ---");
+                    var snapshot=WindowsBatteryReader.Read(target,c,t=>result.AppendLine(t));
+                    result.AppendLine("BatteryOverall: "+snapshot.FormatOverallLine());
+                    result.AppendLine("BatteryMain: "+snapshot.FormatMainLine());
+                    result.AppendLine("BatterySub: "+snapshot.FormatSubLine());
+                }
             }
             Report(path,result.ToString());
         }
