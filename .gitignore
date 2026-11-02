@@ -1,0 +1,10 @@
+dist/
+bin/
+obj/
+.vs/
+*.user
+*.suo
+probe*.txt
+self-test.txt
+*diagnostics*.txt
+*.log
