@@ -44,6 +44,11 @@ namespace BudsDesk {
                 catch(Exception ex) { Status(ex.Message); }
             };
             Find<Button>("Diagnostics").Click+=(s,e)=>ExportLog();
+            Find<Button>("About").Click+=(s,e)=>MessageBox.Show(window,
+                "BudsDesk v0.1.0\n渝水龙出品\nCopyright © 2026 渝水龙\n\n"+
+                "GitHub: zihangliao-cyber/BudsDesk\nMIT 开源许可证\n\n"+
+                "协议研究参考：ncr/omarchy-headphones。\n本项目为独立开发的耳机伴侣，与小米无隶属关系。",
+                "关于 BudsDesk · 渝水龙",MessageBoxButton.OK,MessageBoxImage.Information);
             window.Loaded+=async(s,e)=>{ if(!preview) await Scan(); };
             window.SourceInitialized+=(s,e)=>{ if(!preview) SetupDesktop(); };
             window.StateChanged+=(s,e)=>{ if(window.WindowState==WindowState.Minimized && tray!=null) window.Hide(); };

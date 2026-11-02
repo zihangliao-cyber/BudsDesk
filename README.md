@@ -1,6 +1,10 @@
-# BudsDesk
+# BudsDesk · 渝水龙
 
 小米 **Xiaomi Buds 5 Pro 蓝牙版**的 Windows 桌面伴侣。首个预览版：v0.1.0。
+
+**渝水龙出品 · Copyright © 2026 渝水龙**
+
+作者 GitHub：[zihangliao-cyber](https://github.com/zihangliao-cyber)
 
 ![BudsDesk 界面预览](docs/preview.png)
 
@@ -17,7 +21,7 @@
 
 ## 下载与使用
 
-在本仓库的 **Releases** 页面下载 `BudsDesk-v0.1.0-win-x64.zip`，解压后运行 `BudsDesk.exe`。
+[下载 Windows x64 运行包](downloads/BudsDesk-v0.1.0-win-x64.zip?raw=true)，解压后运行 `BudsDesk.exe`。
 
 1. 在 Windows 蓝牙设置中配对并连接耳机。
 2. 打开 BudsDesk，选择耳机，点击“连接”。
